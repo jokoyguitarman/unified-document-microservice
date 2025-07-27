@@ -240,11 +240,49 @@ async def document_to_images(file: UploadFile = File(...)):
     finally:
         os.remove(tmp_path)
 
+@app.post("/image-to-images")
+async def image_to_images(file: UploadFile = File(...)):
+    """Handle single image upload"""
+    # Validate that the file is an image
+    supported_image_types = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp', 'image/bmp']
+    
+    if file.content_type not in supported_image_types:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Unsupported image type: {file.content_type}. Supported: {', '.join(supported_image_types)}"
+        )
+    
+    try:
+        # Read image file
+        image_bytes = await file.read()
+        
+        # Convert to PIL Image for processing
+        img = Image.open(BytesIO(image_bytes))
+        
+        # Convert to base64
+        buffer = BytesIO()
+        img.save(buffer, format='PNG')
+        img_base64 = base64.b64encode(buffer.getvalue()).decode()
+        
+        return {
+            "images": [img_base64],
+            "num_pages": 1,
+            "file_type": "IMAGE",
+            "message": f"Processed 1 image"
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error processing image: {str(e)}")
+
 @app.post("/images-to-images")
 async def images_to_images(files: list[UploadFile] = File(...)):
     """Handle multiple image uploads as a document sequence"""
     if not files:
         raise HTTPException(status_code=400, detail="No files provided")
+    
+    # Handle single file case (convert to list)
+    if not isinstance(files, list):
+        files = [files]
     
     # Validate that all files are images
     supported_image_types = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp', 'image/bmp']
