@@ -1,5 +1,6 @@
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 import shutil
 import os
 import tempfile
@@ -16,6 +17,15 @@ from pdf2image import convert_from_bytes
 import fitz  # PyMuPDF for PDF processing
 
 app = FastAPI()
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # In production, replace with your frontend URL
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 def create_text_image(text_content: str, page_number: int = 1, title: str = "Document") -> str:
     """Create a visual representation of text content as an image"""
@@ -161,15 +171,34 @@ def process_text_document(file_path: str) -> list[str]:
 
 @app.post("/document-to-images")
 async def document_to_images(file: UploadFile = File(...)):
+    # Add detailed logging
+    print(f"Received file upload request:")
+    print(f"  Filename: {file.filename}")
+    print(f"  Content type: {file.content_type}")
+    print(f"  File size: {file.size if hasattr(file, 'size') else 'unknown'}")
+    
     # Validate file type
-    filename = file.filename.lower()
+    filename = file.filename.lower() if file.filename else ""
     supported_extensions = ['.pdf', '.docx', '.doc', '.xlsx', '.xls', '.pptx', '.ppt', '.txt']
     
-    if not any(filename.endswith(ext) for ext in supported_extensions):
+    print(f"  File extension check: {filename}")
+    print(f"  Supported extensions: {supported_extensions}")
+    
+    if not filename:
+        print("  ERROR: No filename provided")
         raise HTTPException(
             status_code=400, 
-            detail=f"Unsupported file type. Supported: {', '.join(supported_extensions)}"
+            detail="No filename provided"
         )
+    
+    if not any(filename.endswith(ext) for ext in supported_extensions):
+        print(f"  ERROR: Unsupported file type: {filename}")
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Unsupported file type: {filename}. Supported: {', '.join(supported_extensions)}"
+        )
+    
+    print(f"  File validation passed, processing...")
     
     # Save uploaded file to a temp file
     with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(filename)[1]) as tmp:
@@ -179,17 +208,25 @@ async def document_to_images(file: UploadFile = File(...)):
     try:
         # Process based on file type
         if filename.endswith('.pdf'):
+            print("  Processing as PDF...")
             images = process_pdf_document(tmp_path)
         elif filename.endswith(('.docx', '.doc')):
+            print("  Processing as Word document...")
             images = process_word_document(tmp_path)
         elif filename.endswith(('.xlsx', '.xls')):
+            print("  Processing as Excel document...")
             images = process_excel_document(tmp_path)
         elif filename.endswith(('.pptx', '.ppt')):
+            print("  Processing as PowerPoint document...")
             images = process_powerpoint_document(tmp_path)
         elif filename.endswith('.txt'):
+            print("  Processing as text document...")
             images = process_text_document(tmp_path)
         else:
+            print(f"  ERROR: Unsupported file type after validation: {filename}")
             raise HTTPException(status_code=400, detail="Unsupported file type")
+        
+        print(f"  Processing completed successfully. Generated {len(images)} images.")
         
         return {
             "images": images, 
@@ -198,6 +235,7 @@ async def document_to_images(file: UploadFile = File(...)):
         }
         
     except Exception as e:
+        print(f"  ERROR during processing: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error processing document: {str(e)}")
     finally:
         os.remove(tmp_path)
@@ -259,4 +297,12 @@ def root():
             "Multiple image uploads as document sequence",
             "Returns base64 images ready for AI analysis"
         ]
+    }
+
+@app.get("/health")
+def health_check():
+    return {
+        "status": "healthy",
+        "service": "Unified Document to Image Microservice",
+        "timestamp": "2024-01-01T00:00:00Z"
     } 
