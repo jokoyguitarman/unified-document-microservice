@@ -7,4 +7,5 @@ openpyxl
 pymupdf
 pillow
 python-multipart
-requests 
+requests
+supabase>=2.0.0
