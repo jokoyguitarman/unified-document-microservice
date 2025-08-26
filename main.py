@@ -494,13 +494,10 @@ async def process_document_with_urls(request: ProcessDocumentWithUrlsRequest):
                 supabase = get_supabase_client()
                 
                 # Download the image from the 'document-images' bucket
-                response = supabase.storage.from_('document-images').download(image_url)
-                
-                if response.error:
-                    raise Exception(f"Storage download error: {response.error}")
+                # Supabase storage download returns bytes directly on success
+                image_data = supabase.storage.from_('document-images').download(image_url)
                 
                 # Convert the downloaded data to base64
-                image_data = response.data
                 image_base64 = base64.b64encode(image_data).decode('utf-8')
                 
                 # Add to our base64 images array
