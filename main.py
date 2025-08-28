@@ -1,8 +1,6 @@
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import List, Optional
 import shutil
 import os
 import tempfile
@@ -12,8 +10,6 @@ import requests
 from io import BytesIO
 from PIL import Image, ImageDraw, ImageFont
 import io
-import os
-from supabase import create_client, Client
 
 # Document processing libraries
 from pptx import Presentation
@@ -21,39 +17,7 @@ from docx import Document
 import pandas as pd
 import fitz  # PyMuPDF for PDF processing
 
-# Request models
-class ProcessDocumentWithUrlsRequest(BaseModel):
-    job_id: str
-    user_id: str
-    image_urls: List[str]
-    num_pages: int
-    file_type: str
-    fallback_text: Optional[str] = None
-    selected_pages: Optional[List[int]] = None
-    processing_mode: str
-
-# Initialize Supabase client for storage access
-def get_supabase_client() -> Client:
-    """Get Supabase client for storage operations"""
-    supabase_url = os.getenv("SUPABASE_URL")
-    supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-    
-    if not supabase_url or not supabase_key:
-        raise Exception("Missing Supabase credentials")
-    
-    return create_client(supabase_url, supabase_key)
-
 app = FastAPI()
-
-@app.get("/health")
-async def health_check():
-    """Health check endpoint"""
-    return {"status": "healthy", "message": "Unified Document Microservice is running"}
-
-@app.get("/")
-async def root():
-    """Root endpoint"""
-    return {"message": "Unified Document Microservice", "version": "1.0.0"}
 
 # Add CORS middleware
 app.add_middleware(
@@ -328,6 +292,75 @@ async def images_to_images(files: list[UploadFile] = File(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing images: {str(e)}")
 
+@app.post("/convert-images-to-base64")
+async def convert_images_to_base64(
+    images: list[str],  # Base64 strings from the request
+    processing_mode: str = "full",
+    selected_pages: list[int] = None
+):
+    """
+    Convert base64 image strings and handle page selection
+    """
+    try:
+        print(f"Received image conversion request:")
+        print(f"  Number of images: {len(images)}")
+        print(f"  Processing mode: {processing_mode}")
+        print(f"  Selected pages: {selected_pages}")
+        
+        if not images:
+            raise HTTPException(status_code=400, detail="No images provided")
+        
+        # Validate that all images are valid base64 strings
+        images_base64 = []
+        for i, image_base64 in enumerate(images):
+            try:
+                # Validate base64 string
+                if not image_base64 or not isinstance(image_base64, str):
+                    raise ValueError("Invalid base64 string")
+                
+                # Test if it's valid base64 by trying to decode
+                import base64
+                base64.b64decode(image_base64)
+                
+                images_base64.append(image_base64)
+                print(f"  Validated image {i+1}/{len(images)} as base64")
+            except Exception as e:
+                print(f"  Error validating image {i+1}: {str(e)}")
+                raise HTTPException(status_code=400, detail=f"Invalid base64 image {i+1}: {str(e)}")
+        
+        print(f"  Successfully validated {len(images_base64)} images as base64")
+        
+        # Handle page selection
+        if processing_mode == "selection" and selected_pages:
+            # Validate selected pages
+            if not all(1 <= p <= len(images_base64) for p in selected_pages):
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"Invalid page selection. Valid range: 1-{len(images_base64)}"
+                )
+            
+            # Filter to selected pages (1-indexed to 0-indexed)
+            selected_images = []
+            for page_num in selected_pages:
+                image_index = page_num - 1  # Convert 1-indexed to 0-indexed
+                if 0 <= image_index < len(images_base64):
+                    selected_images.append(images_base64[image_index])
+            
+            images_base64 = selected_images
+            print(f"  Filtered to {len(images_base64)} selected pages: {selected_pages}")
+        
+        return {
+            "images_base64": images_base64,
+            "num_pages": len(images_base64),
+            "selected_pages": selected_pages if processing_mode == "selection" else None,
+            "processing_mode": processing_mode,
+            "message": f"Successfully processed {len(images_base64)} images"
+        }
+        
+    except Exception as e:
+        print(f"  ERROR during image conversion: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error converting images: {str(e)}")
+
 @app.get("/")
 def root():
     return {
@@ -336,7 +369,8 @@ def root():
         "endpoints": {
             "document_to_images": "/document-to-images",
             "images_to_images": "/images-to-images",
-            "process_with_ai": "/process-with-ai"
+            "process_with_ai": "/process-with-ai",
+            "convert_images_to_base64": "/convert-images-to-base64"
         },
         "features": [
             "Single document upload (PDF, Word, Excel, PowerPoint, Text)",
@@ -344,7 +378,9 @@ def root():
             "Returns base64 images ready for AI analysis",
             "Direct AI processing with page selection support",
             "Integrated with document-base64-analyzer.onrender.com",
-            "Efficient page selection - only selected pages sent to AI"
+            "Efficient page selection - only selected pages sent to AI",
+            "Image conversion from downloaded data to base64",
+            "Page selection filtering for partial document processing"
         ]
     }
 
@@ -470,103 +506,4 @@ async def process_with_ai(
             
     except Exception as e:
         print(f"  ERROR during AI processing: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error processing document: {str(e)}")
-
-@app.post("/process-document-with-urls")
-async def process_document_with_urls(request: ProcessDocumentWithUrlsRequest):
-    """
-    Process document using image URLs instead of base64 data.
-    This endpoint is called by the frontend when user selects processing options.
-    """
-    try:
-        print(f"🚀 Processing document with {len(request.image_urls)} image URLs")
-        print(f"📋 Request details: job_id={request.job_id}, processing_mode={request.processing_mode}")
-        
-        # Download images from Supabase Storage and convert to base64
-        images_base64 = []
-        failed_images = []
-        
-        for i, image_url in enumerate(request.image_urls):
-            try:
-                print(f"📥 Downloading image {i+1}/{len(request.image_urls)}: {image_url}")
-                
-                # Download image from Supabase Storage
-                supabase = get_supabase_client()
-                
-                # Download the image from the 'document-images' bucket
-                # Supabase storage download returns bytes directly on success
-                image_data = supabase.storage.from_('document-images').download(image_url)
-                
-                # Convert the downloaded data to base64
-                image_base64 = base64.b64encode(image_data).decode('utf-8')
-                
-                # Add to our base64 images array
-                images_base64.append(image_base64)
-                
-                print(f"✅ Image {i+1} downloaded and converted to base64 successfully")
-                
-            except Exception as e:
-                print(f"❌ Failed to process image {i+1}: {e}")
-                failed_images.append(i+1)
-                continue
-        
-        if len(failed_images) > 0:
-            print(f"⚠️ {len(failed_images)} images failed to process: {failed_images}")
-        
-        if len(images_base64) == 0:
-            raise HTTPException(
-                status_code=500, 
-                detail="Failed to process any images from URLs"
-            )
-        
-        print(f"📊 Successfully processed {len(images_base64)} images")
-        
-        # Now call the AI microservice with the base64 images
-        ai_microservice_url = "https://document-base64-analyzer.onrender.com"
-        ai_endpoint = f"{ai_microservice_url}/process-document"
-        
-        ai_payload = {
-            "job_id": request.job_id,
-            "user_id": request.user_id,
-            "images_base64": images_base64,
-            "num_pages": len(images_base64),
-            "file_type": request.file_type,
-            "fallback_text": request.fallback_text or f"Document processed from {len(request.image_urls)} image URLs",
-            "processing_mode": request.processing_mode
-        }
-        
-        if request.selected_pages:
-            ai_payload["selected_pages"] = request.selected_pages
-        
-        print(f"📡 Calling AI microservice: {ai_endpoint}")
-        print(f"📦 AI payload: {len(images_base64)} images, {request.processing_mode} mode")
-        
-        # Make the request to AI microservice
-        response = requests.post(ai_endpoint, json=ai_payload, timeout=120)  # Increased timeout for large documents
-        
-        if response.status_code == 200:
-            ai_result = response.json()
-            print(f"✅ AI microservice processing completed successfully")
-            
-            return {
-                "status": "success",
-                "message": f"Document processed successfully from {len(request.image_urls)} image URLs",
-                "ai_response": ai_result,
-                "document_info": {
-                    "images_processed": len(images_base64),
-                    "failed_images": failed_images,
-                    "file_type": request.file_type,
-                    "processing_mode": request.processing_mode,
-                    "selected_pages": request.selected_pages
-                }
-            }
-        else:
-            print(f"❌ AI microservice error: {response.status_code} - {response.text}")
-            raise HTTPException(
-                status_code=500, 
-                detail=f"AI microservice error: {response.status_code} - {response.text}"
-            )
-            
-    except Exception as e:
-        print(f"❌ ERROR processing document with URLs: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error processing document with URLs: {str(e)}") 
+        raise HTTPException(status_code=500, detail=f"Error processing document: {str(e)}") 
