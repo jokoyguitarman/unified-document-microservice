@@ -700,11 +700,19 @@ async def document_to_images(file: UploadFile = File(...)):
         
         print(f"  Processing completed successfully. Generated {len(images)} images.")
         
-        return {
+        # Calculate response size for debugging
+        response_data = {
             "images": images, 
             "num_pages": len(images),
             "file_type": os.path.splitext(filename)[1][1:].upper()
         }
+        
+        # Log response size
+        import json
+        response_size = len(json.dumps(response_data))
+        print(f"  Response size: {response_size} bytes")
+        
+        return response_data
         
     except Exception as e:
         print(f"  ERROR during processing: {str(e)}")
