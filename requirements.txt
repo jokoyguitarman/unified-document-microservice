@@ -8,4 +8,7 @@ pymupdf
 pillow
 python-multipart
 requests
-supabase>=2.0.0
+docx2pdf
+pptx2pdf
+openpyxl
+xlsxwriter 

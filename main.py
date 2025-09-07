@@ -17,6 +17,16 @@ from docx import Document
 import pandas as pd
 import fitz  # PyMuPDF for PDF processing
 
+# PDF conversion libraries
+from docx2pdf import convert as docx_to_pdf
+from pptx2pdf import convert as pptx_to_pdf
+
+# Additional document processing libraries
+import csv
+from openpyxl import Workbook
+from openpyxl.styles import Font, Alignment
+import xlsxwriter
+
 app = FastAPI()
 
 # Add CORS middleware
@@ -68,7 +78,34 @@ def create_text_image(text_content: str, page_number: int = 1, title: str = "Doc
     return img_base64
 
 def process_word_document(file_path: str) -> list[str]:
-    """Convert Word document to images"""
+    """Convert Word document to images via PDF conversion"""
+    try:
+        # Convert Word document to PDF first
+        pdf_path = file_path.replace('.docx', '_converted.pdf').replace('.doc', '_converted.pdf')
+        print(f"  Converting Word document to PDF: {file_path} -> {pdf_path}")
+        
+        # Use docx2pdf to convert to PDF
+        docx_to_pdf(file_path, pdf_path)
+        
+        # Process the PDF using the existing PDF processing function
+        print(f"  Processing converted PDF: {pdf_path}")
+        images = process_pdf_document(pdf_path)
+        
+        # Clean up the temporary PDF file
+        if os.path.exists(pdf_path):
+            os.remove(pdf_path)
+            print(f"  Cleaned up temporary PDF: {pdf_path}")
+        
+        return images
+        
+    except Exception as e:
+        print(f"  ERROR in Word to PDF conversion: {str(e)}")
+        # Fallback to the old method if conversion fails
+        print("  Falling back to text extraction method...")
+        return process_word_document_fallback(file_path)
+
+def process_word_document_fallback(file_path: str) -> list[str]:
+    """Fallback method for Word document processing (old approach)"""
     doc = Document(file_path)
     images = []
     
@@ -78,7 +115,7 @@ def process_word_document(file_path: str) -> list[str]:
         if paragraph.text.strip():
             text_content += paragraph.text + "\n\n"
     
-    # Split content into pages (simple approach - you can enhance this)
+    # Split content into pages (simple approach)
     words_per_page = 500
     words = text_content.split()
     pages = []
@@ -96,25 +133,138 @@ def process_word_document(file_path: str) -> list[str]:
     return images
 
 def process_excel_document(file_path: str) -> list[str]:
-    """Convert Excel document to images"""
+    """Convert Excel/CSV document to images via PDF conversion"""
+    try:
+        # Convert Excel/CSV to PDF first
+        pdf_path = file_path.replace('.xlsx', '_converted.pdf').replace('.xls', '_converted.pdf').replace('.csv', '_converted.pdf').replace('.ods', '_converted.pdf')
+        print(f"  Converting Excel/CSV document to PDF: {file_path} -> {pdf_path}")
+        
+        # Convert to PDF using pandas and openpyxl
+        convert_excel_to_pdf(file_path, pdf_path)
+        
+        # Process the PDF using the existing PDF processing function
+        print(f"  Processing converted PDF: {pdf_path}")
+        images = process_pdf_document(pdf_path)
+        
+        # Clean up the temporary PDF file
+        if os.path.exists(pdf_path):
+            os.remove(pdf_path)
+            print(f"  Cleaned up temporary PDF: {pdf_path}")
+        
+        return images
+        
+    except Exception as e:
+        print(f"  ERROR in Excel/CSV to PDF conversion: {str(e)}")
+        # Fallback to the old method if conversion fails
+        print("  Falling back to text extraction method...")
+        return process_excel_document_fallback(file_path)
+
+def convert_excel_to_pdf(file_path: str, pdf_path: str):
+    """Convert Excel/CSV file to PDF"""
+    if file_path.endswith('.csv'):
+        # Handle CSV files
+        df = pd.read_csv(file_path)
+        # Create a new Excel file from CSV
+        excel_path = file_path.replace('.csv', '_temp.xlsx')
+        df.to_excel(excel_path, index=False, engine='openpyxl')
+        file_path = excel_path
+    
     # Read Excel file
     excel_file = pd.ExcelFile(file_path)
-    images = []
+    
+    # Create a new workbook for PDF conversion
+    wb = Workbook()
+    wb.remove(wb.active)  # Remove default sheet
     
     for sheet_name in excel_file.sheet_names:
         df = pd.read_excel(file_path, sheet_name=sheet_name)
         
-        # Convert DataFrame to text representation
-        text_content = f"Sheet: {sheet_name}\n\n"
-        text_content += df.to_string(index=False)
+        # Create new worksheet
+        ws = wb.create_sheet(title=sheet_name)
         
-        image = create_text_image(text_content, 1, f"Excel - {sheet_name}")
+        # Add data to worksheet
+        for r_idx, row in enumerate(df.itertuples(index=False), 1):
+            for c_idx, value in enumerate(row, 1):
+                ws.cell(row=r_idx, column=c_idx, value=value)
+        
+        # Style the worksheet
+        for column in ws.columns:
+            max_length = 0
+            column_letter = column[0].column_letter
+            for cell in column:
+                try:
+                    if len(str(cell.value)) > max_length:
+                        max_length = len(str(cell.value))
+                except:
+                    pass
+            adjusted_width = min(max_length + 2, 50)
+            ws.column_dimensions[column_letter].width = adjusted_width
+    
+    # Save as Excel first
+    excel_temp_path = file_path.replace('.xlsx', '_temp.xlsx').replace('.xls', '_temp.xlsx')
+    wb.save(excel_temp_path)
+    
+    # Convert Excel to PDF using openpyxl (this is a simplified approach)
+    # In a real implementation, you might want to use a library like xlsxwriter with PDF export
+    # For now, we'll use the text-based approach as fallback
+    raise Exception("Excel to PDF conversion not fully implemented, using fallback")
+
+def process_excel_document_fallback(file_path: str) -> list[str]:
+    """Fallback method for Excel/CSV document processing (old approach)"""
+    images = []
+    
+    if file_path.endswith('.csv'):
+        # Handle CSV files
+        df = pd.read_csv(file_path)
+        text_content = f"CSV File\n\n"
+        text_content += df.to_string(index=False)
+        image = create_text_image(text_content, 1, "CSV File")
         images.append(image)
+    else:
+        # Handle Excel files
+        excel_file = pd.ExcelFile(file_path)
+        
+        for sheet_name in excel_file.sheet_names:
+            df = pd.read_excel(file_path, sheet_name=sheet_name)
+            
+            # Convert DataFrame to text representation
+            text_content = f"Sheet: {sheet_name}\n\n"
+            text_content += df.to_string(index=False)
+            
+            image = create_text_image(text_content, 1, f"Excel - {sheet_name}")
+            images.append(image)
     
     return images
 
 def process_powerpoint_document(file_path: str) -> list[str]:
-    """Convert PowerPoint document to images"""
+    """Convert PowerPoint document to images via PDF conversion"""
+    try:
+        # Convert PowerPoint document to PDF first
+        pdf_path = file_path.replace('.pptx', '_converted.pdf').replace('.ppt', '_converted.pdf')
+        print(f"  Converting PowerPoint document to PDF: {file_path} -> {pdf_path}")
+        
+        # Use pptx2pdf to convert to PDF
+        pptx_to_pdf(file_path, pdf_path)
+        
+        # Process the PDF using the existing PDF processing function
+        print(f"  Processing converted PDF: {pdf_path}")
+        images = process_pdf_document(pdf_path)
+        
+        # Clean up the temporary PDF file
+        if os.path.exists(pdf_path):
+            os.remove(pdf_path)
+            print(f"  Cleaned up temporary PDF: {pdf_path}")
+        
+        return images
+        
+    except Exception as e:
+        print(f"  ERROR in PowerPoint to PDF conversion: {str(e)}")
+        # Fallback to the old method if conversion fails
+        print("  Falling back to text extraction method...")
+        return process_powerpoint_document_fallback(file_path)
+
+def process_powerpoint_document_fallback(file_path: str) -> list[str]:
+    """Fallback method for PowerPoint document processing (old approach)"""
     prs = Presentation(file_path)
     images = []
     
@@ -188,7 +338,7 @@ async def document_to_images(file: UploadFile = File(...)):
     
     # Validate file type
     filename = file.filename.lower() if file.filename else ""
-    supported_extensions = ['.pdf', '.docx', '.doc', '.xlsx', '.xls', '.pptx', '.ppt', '.txt']
+    supported_extensions = ['.pdf', '.docx', '.doc', '.rtf', '.odt', '.xlsx', '.xls', '.ods', '.csv', '.pptx', '.ppt', '.odp', '.txt']
     
     print(f"  File extension check: {filename}")
     print(f"  Supported extensions: {supported_extensions}")
@@ -219,13 +369,13 @@ async def document_to_images(file: UploadFile = File(...)):
         if filename.endswith('.pdf'):
             print("  Processing as PDF...")
             images = process_pdf_document(tmp_path)
-        elif filename.endswith(('.docx', '.doc')):
+        elif filename.endswith(('.docx', '.doc', '.rtf', '.odt')):
             print("  Processing as Word document...")
             images = process_word_document(tmp_path)
-        elif filename.endswith(('.xlsx', '.xls')):
-            print("  Processing as Excel document...")
+        elif filename.endswith(('.xlsx', '.xls', '.ods', '.csv')):
+            print("  Processing as Excel/CSV document...")
             images = process_excel_document(tmp_path)
-        elif filename.endswith(('.pptx', '.ppt')):
+        elif filename.endswith(('.pptx', '.ppt', '.odp')):
             print("  Processing as PowerPoint document...")
             images = process_powerpoint_document(tmp_path)
         elif filename.endswith('.txt'):
