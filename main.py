@@ -17,9 +17,8 @@ from docx import Document
 import pandas as pd
 import fitz  # PyMuPDF for PDF processing
 
-# PDF conversion libraries
-from docx2pdf import convert as docx_to_pdf
-import pypandoc
+# PDF conversion libraries (currently not used - using text extraction instead)
+# import pypandoc
 
 # Additional document processing libraries
 import csv
@@ -32,6 +31,12 @@ from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, 
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib import colors
 from reportlab.lib.units import inch
+from reportlab.pdfgen import canvas
+
+# Matplotlib for Excel to PDF conversion
+import matplotlib.pyplot as plt
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend
 
 app = FastAPI()
 
@@ -84,35 +89,51 @@ def create_text_image(text_content: str, page_number: int = 1, title: str = "Doc
     return img_base64
 
 def process_word_document(file_path: str) -> list[str]:
-    """Convert Word document to images via PDF conversion"""
+    """Convert Word document to images via enhanced text extraction"""
     try:
-        # Convert Word document to PDF first
-        pdf_path = file_path.replace('.docx', '_converted.pdf').replace('.doc', '_converted.pdf')
-        print(f"  Converting Word document to PDF: {file_path} -> {pdf_path}")
-        
-        # Try docx2pdf first (works well for .docx files)
-        if file_path.endswith(('.docx', '.doc')):
-            docx_to_pdf(file_path, pdf_path)
-        else:
-            # Use pypandoc for other Word formats (.rtf, .odt)
-            pypandoc.convert_file(file_path, 'pdf', outputfile=pdf_path)
-        
-        # Process the PDF using the existing PDF processing function
-        print(f"  Processing converted PDF: {pdf_path}")
-        images = process_pdf_document(pdf_path)
-        
-        # Clean up the temporary PDF file
-        if os.path.exists(pdf_path):
-            os.remove(pdf_path)
-            print(f"  Cleaned up temporary PDF: {pdf_path}")
-        
-        return images
+        # Use enhanced text extraction for all Word formats
+        print("  Processing Word document with enhanced text extraction")
+        return process_word_document_enhanced(file_path)
         
     except Exception as e:
-        print(f"  ERROR in Word to PDF conversion: {str(e)}")
-        # Fallback to the old method if conversion fails
-        print("  Falling back to text extraction method...")
+        print(f"  ERROR in Word processing: {str(e)}")
+        print(f"  Error details: {type(e).__name__}: {str(e)}")
+        # Fallback to basic text extraction if enhanced method fails
+        print("  Falling back to basic text extraction method...")
         return process_word_document_fallback(file_path)
+
+def process_word_document_enhanced(file_path: str) -> list[str]:
+    """Enhanced Word document processing with better formatting"""
+    doc = Document(file_path)
+    images = []
+    
+    # Extract text from paragraphs with better formatting
+    text_content = f"Word Document: {os.path.basename(file_path)}\n"
+    text_content += "=" * 60 + "\n\n"
+    
+    for paragraph in doc.paragraphs:
+        if paragraph.text.strip():
+            # Add paragraph formatting context
+            if paragraph.style.name != 'Normal':
+                text_content += f"[{paragraph.style.name}]: "
+            text_content += paragraph.text + "\n\n"
+    
+    # Split content into pages (enhanced approach)
+    words_per_page = 800  # More words per page for better readability
+    words = text_content.split()
+    pages = []
+    
+    for i in range(0, len(words), words_per_page):
+        page_words = words[i:i + words_per_page]
+        pages.append(" ".join(page_words))
+    
+    # Create images for each page
+    for i, page_content in enumerate(pages):
+        if page_content.strip():
+            image = create_text_image(page_content, i + 1, "Word Document")
+            images.append(image)
+    
+    return images
 
 def process_word_document_fallback(file_path: str) -> list[str]:
     """Fallback method for Word document processing (old approach)"""
@@ -143,14 +164,14 @@ def process_word_document_fallback(file_path: str) -> list[str]:
     return images
 
 def process_excel_document(file_path: str) -> list[str]:
-    """Convert Excel/CSV document to images via PDF conversion"""
+    """Convert Excel/CSV document to images via PDF conversion using matplotlib"""
     try:
-        # Convert Excel/CSV to PDF first
+        # Convert Excel/CSV to PDF first using matplotlib approach
         pdf_path = file_path.replace('.xlsx', '_converted.pdf').replace('.xls', '_converted.pdf').replace('.csv', '_converted.pdf').replace('.ods', '_converted.pdf')
         print(f"  Converting Excel/CSV document to PDF: {file_path} -> {pdf_path}")
         
-        # Convert to PDF using openpyxl + reportlab
-        convert_excel_to_pdf(file_path, pdf_path)
+        # Convert to PDF using matplotlib + reportlab
+        convert_excel_to_pdf_matplotlib(file_path, pdf_path)
         
         # Process the PDF using the existing PDF processing function
         print(f"  Processing converted PDF: {pdf_path}")
@@ -165,9 +186,187 @@ def process_excel_document(file_path: str) -> list[str]:
         
     except Exception as e:
         print(f"  ERROR in Excel/CSV to PDF conversion: {str(e)}")
+        print(f"  Error details: {type(e).__name__}: {str(e)}")
         # Fallback to enhanced text extraction if PDF conversion fails
         print("  Falling back to enhanced text extraction method...")
         return process_excel_document_enhanced(file_path)
+
+def df_to_image(df, out_png_path, page_width_in, page_height_in, dpi=200, title=None):
+    """
+    Render a DataFrame to a PNG image sized to fit within the given
+    width/height (in inches). We compute a font size that fits rows/cols.
+    """
+    # margins inside the image (in inches)
+    left_margin_in = 0.25
+    right_margin_in = 0.25
+    top_margin_in = 0.5 if title else 0.25
+    bottom_margin_in = 0.25
+
+    usable_w_in = max(1e-3, page_width_in - left_margin_in - right_margin_in)
+    usable_h_in = max(1e-3, page_height_in - top_margin_in - bottom_margin_in)
+
+    # Create the figure sized to the full page minus margins
+    fig_w_in = page_width_in
+    fig_h_in = page_height_in
+
+    fig, ax = plt.subplots(figsize=(fig_w_in, fig_h_in), dpi=dpi)
+    ax.axis("off")
+
+    # Positioning rect for the table (in axes fraction). We'll leave margins.
+    # Convert inches to axis fraction.
+    left = left_margin_in / fig_w_in
+    right = 1.0 - (right_margin_in / fig_w_in)
+    bottom = bottom_margin_in / fig_h_in
+    top = 1.0 - (top_margin_in / fig_h_in)
+
+    # Calculate a font size that (roughly) fits rows/columns into usable area.
+    # Text size in points; 72 points = 1 inch.
+    nrows, ncols = df.shape
+    nrows = max(1, nrows)
+    ncols = max(1, ncols)
+
+    # Heuristic: each row needs about 1.3 * (fontsize/72) inches in height;
+    # each column needs about 2.3 * (fontsize/72) inches in width.
+    # Tune factors to balance readability vs. fitting large sheets.
+    if nrows == 0:
+        # Empty sheet—make a tiny table with just headers (if any)
+        nrows_eff = 1
+    else:
+        nrows_eff = nrows + 1  # account for header row
+
+    # Height-limited font size
+    fs_by_h = (usable_h_in * 72) / (1.3 * nrows_eff)
+    # Width-limited font size
+    fs_by_w = (usable_w_in * 72) / (2.3 * max(1, ncols))
+
+    fontsize = max(5, min(12, fs_by_h, fs_by_w))
+
+    # Prepare table data with headers
+    data = [list(df.columns)]
+    if nrows > 0:
+        # Convert all cells to string to avoid weird rendering
+        body = df.astype(str).values.tolist()
+        data.extend(body)
+
+    # Draw title (if any)
+    if title:
+        ax.text(
+            0.5, 1.0 - (top_margin_in - 0.25) / fig_h_in,  # position slightly above table area
+            title,
+            ha="center",
+            va="top",
+            fontsize=min(16, max(10, fontsize + 2)),
+            fontweight="bold",
+            transform=ax.transAxes,
+        )
+
+    # Create the table
+    table = ax.table(
+        cellText=data,
+        loc="center",
+        colLabels=None,  # we already placed header as first row of cellText
+        cellLoc="center",
+        bbox=(left, bottom, right - left, top - bottom)  # (x, y, w, h) in axes fraction
+    )
+
+    # Style header row
+    header_row_idx = 0
+    for (row, col), cell in table.get_celld().items():
+        cell.set_linewidth(0.3)
+        if row == header_row_idx:
+            cell.set_text_props(fontweight="bold")
+    # Set all font sizes
+    for key, cell in table.get_celld().items():
+        cell.set_fontsize(fontsize)
+
+    # Tight layout off; we explicitly controlled bbox.
+    fig.savefig(out_png_path, bbox_inches="tight", dpi=dpi)
+    plt.close(fig)
+
+def convert_excel_to_pdf_matplotlib(file_path: str, pdf_path: str):
+    """Convert Excel/CSV file to PDF using matplotlib + reportlab (one page per sheet)"""
+    try:
+        # Page settings
+        page_w_pt, page_h_pt = A4
+        margin_pt = 36  # 0.5 inch
+        content_w_pt = page_w_pt - 2 * margin_pt
+        content_h_pt = page_h_pt - 2 * margin_pt
+
+        # Convert points to inches for our image renderer
+        content_w_in = content_w_pt / 72.0
+        content_h_in = content_h_pt / 72.0
+
+        c = canvas.Canvas(pdf_path, pagesize=A4)
+
+        if file_path.endswith('.csv'):
+            # Handle CSV files
+            df = pd.read_csv(file_path)
+            with tempfile.TemporaryDirectory() as td:
+                img_path = os.path.join(td, "sheet.png")
+                # Render DF to PNG sized to fit the content area
+                title = f"{os.path.basename(file_path)}"
+                df_to_image(df, img_path, content_w_in, content_h_in, dpi=200, title=title)
+
+                # Draw on PDF page (centered in content area)
+                from PIL import Image
+                img = Image.open(img_path)
+                img_w_px, img_h_px = img.size
+                img_dpi = 200.0  # must match df_to_image dpi
+                img_w_in = img_w_px / img_dpi
+                img_h_in = img_h_px / img_dpi
+                img_w_pt = img_w_in * 72.0
+                img_h_pt = img_h_in * 72.0
+
+                scale = min(content_w_pt / img_w_pt, content_h_pt / img_h_pt)
+                draw_w = img_w_pt * scale
+                draw_h = img_h_pt * scale
+
+                x = (page_w_pt - draw_w) / 2.0
+                y = (page_h_pt - draw_h) / 2.0
+
+                c.drawImage(img_path, x, y, width=draw_w, height=draw_h, preserveAspectRatio=True, anchor='c')
+
+            c.showPage()
+        else:
+            # Handle Excel files
+            xls = pd.ExcelFile(file_path)
+            for sheet_name in xls.sheet_names:
+                df = xls.parse(sheet_name=sheet_name, dtype=str)
+
+                with tempfile.TemporaryDirectory() as td:
+                    img_path = os.path.join(td, "sheet.png")
+                    # Render DF to PNG sized to fit the content area
+                    title = f"{os.path.basename(file_path)} — {sheet_name}"
+                    df_to_image(df, img_path, content_w_in, content_h_in, dpi=200, title=sheet_name)
+
+                    # Draw on PDF page (centered in content area)
+                    from PIL import Image
+                    img = Image.open(img_path)
+                    img_w_px, img_h_px = img.size
+                    img_dpi = 200.0  # must match df_to_image dpi
+                    img_w_in = img_w_px / img_dpi
+                    img_h_in = img_h_px / img_dpi
+                    img_w_pt = img_w_in * 72.0
+                    img_h_pt = img_h_in * 72.0
+
+                    scale = min(content_w_pt / img_w_pt, content_h_pt / img_h_pt)
+                    draw_w = img_w_pt * scale
+                    draw_h = img_h_pt * scale
+
+                    x = (page_w_pt - draw_w) / 2.0
+                    y = (page_h_pt - draw_h) / 2.0
+
+                    c.drawImage(img_path, x, y, width=draw_w, height=draw_h, preserveAspectRatio=True, anchor='c')
+
+                c.showPage()
+
+        c.save()
+        print(f"  Successfully converted Excel/CSV to PDF using matplotlib: {pdf_path}")
+        return True
+        
+    except Exception as e:
+        print(f"  ERROR in Excel to PDF conversion (matplotlib): {str(e)}")
+        raise e
 
 def convert_excel_to_pdf(file_path: str, pdf_path: str):
     """Convert Excel/CSV file to PDF using openpyxl + reportlab"""
@@ -342,31 +541,18 @@ def process_excel_document_fallback(file_path: str) -> list[str]:
     return images
 
 def process_powerpoint_document(file_path: str) -> list[str]:
-    """Convert PowerPoint document to images via PDF conversion using pypandoc"""
+    """Convert PowerPoint document to images via enhanced text extraction"""
     try:
-        # Convert PowerPoint document to PDF first using pypandoc
-        pdf_path = file_path.replace('.pptx', '_converted.pdf').replace('.ppt', '_converted.pdf')
-        print(f"  Converting PowerPoint document to PDF: {file_path} -> {pdf_path}")
-        
-        # Use pypandoc to convert to PDF
-        pypandoc.convert_file(file_path, 'pdf', outputfile=pdf_path)
-        
-        # Process the PDF using the existing PDF processing function
-        print(f"  Processing converted PDF: {pdf_path}")
-        images = process_pdf_document(pdf_path)
-        
-        # Clean up the temporary PDF file
-        if os.path.exists(pdf_path):
-            os.remove(pdf_path)
-            print(f"  Cleaned up temporary PDF: {pdf_path}")
-        
-        return images
+        # Use enhanced text extraction since pypandoc doesn't support PowerPoint
+        print("  Processing PowerPoint document with enhanced text extraction (pypandoc doesn't support .pptx)")
+        return process_powerpoint_document_enhanced(file_path)
         
     except Exception as e:
-        print(f"  ERROR in PowerPoint to PDF conversion: {str(e)}")
-        # Fallback to enhanced text extraction if PDF conversion fails
-        print("  Falling back to enhanced text extraction method...")
-        return process_powerpoint_document_enhanced(file_path)
+        print(f"  ERROR in PowerPoint processing: {str(e)}")
+        print(f"  Error details: {type(e).__name__}: {str(e)}")
+        # Fallback to basic text extraction if enhanced method fails
+        print("  Falling back to basic text extraction method...")
+        return process_powerpoint_document_fallback(file_path)
 
 def process_powerpoint_document_enhanced(file_path: str) -> list[str]:
     """Enhanced PowerPoint document processing with better formatting"""
@@ -522,9 +708,14 @@ async def document_to_images(file: UploadFile = File(...)):
         
     except Exception as e:
         print(f"  ERROR during processing: {str(e)}")
+        print(f"  Error type: {type(e).__name__}")
+        print(f"  Error details: {str(e)}")
+        import traceback
+        print(f"  Traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"Error processing document: {str(e)}")
     finally:
-        os.remove(tmp_path)
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
 
 @app.post("/images-to-images")
 async def images_to_images(files: list[UploadFile] = File(...)):
