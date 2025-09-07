@@ -8,4 +8,6 @@ pymupdf
 pillow
 python-multipart
 requests
-docx2pdf 
+docx2pdf
+pypandoc
+reportlab 

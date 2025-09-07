@@ -19,11 +19,19 @@ import fitz  # PyMuPDF for PDF processing
 
 # PDF conversion libraries
 from docx2pdf import convert as docx_to_pdf
+import pypandoc
 
 # Additional document processing libraries
 import csv
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, Alignment
+
+# ReportLab for Excel to PDF conversion
+from reportlab.lib.pagesizes import letter, A4
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib import colors
+from reportlab.lib.units import inch
 
 app = FastAPI()
 
@@ -82,8 +90,12 @@ def process_word_document(file_path: str) -> list[str]:
         pdf_path = file_path.replace('.docx', '_converted.pdf').replace('.doc', '_converted.pdf')
         print(f"  Converting Word document to PDF: {file_path} -> {pdf_path}")
         
-        # Use docx2pdf to convert to PDF
-        docx_to_pdf(file_path, pdf_path)
+        # Try docx2pdf first (works well for .docx files)
+        if file_path.endswith(('.docx', '.doc')):
+            docx_to_pdf(file_path, pdf_path)
+        else:
+            # Use pypandoc for other Word formats (.rtf, .odt)
+            pypandoc.convert_file(file_path, 'pdf', outputfile=pdf_path)
         
         # Process the PDF using the existing PDF processing function
         print(f"  Processing converted PDF: {pdf_path}")
@@ -131,20 +143,142 @@ def process_word_document_fallback(file_path: str) -> list[str]:
     return images
 
 def process_excel_document(file_path: str) -> list[str]:
-    """Convert Excel/CSV document to images with enhanced formatting"""
+    """Convert Excel/CSV document to images via PDF conversion"""
     try:
-        # Use enhanced text extraction for now
-        print("  Processing Excel/CSV document with enhanced text extraction...")
-        return process_excel_document_enhanced(file_path)
+        # Convert Excel/CSV to PDF first
+        pdf_path = file_path.replace('.xlsx', '_converted.pdf').replace('.xls', '_converted.pdf').replace('.csv', '_converted.pdf').replace('.ods', '_converted.pdf')
+        print(f"  Converting Excel/CSV document to PDF: {file_path} -> {pdf_path}")
+        
+        # Convert to PDF using openpyxl + reportlab
+        convert_excel_to_pdf(file_path, pdf_path)
+        
+        # Process the PDF using the existing PDF processing function
+        print(f"  Processing converted PDF: {pdf_path}")
+        images = process_pdf_document(pdf_path)
+        
+        # Clean up the temporary PDF file
+        if os.path.exists(pdf_path):
+            os.remove(pdf_path)
+            print(f"  Cleaned up temporary PDF: {pdf_path}")
+        
+        return images
         
     except Exception as e:
-        print(f"  ERROR in Excel/CSV processing: {str(e)}")
-        # Fallback to the basic method if enhanced method fails
-        print("  Falling back to basic text extraction method...")
-        return process_excel_document_fallback(file_path)
+        print(f"  ERROR in Excel/CSV to PDF conversion: {str(e)}")
+        # Fallback to enhanced text extraction if PDF conversion fails
+        print("  Falling back to enhanced text extraction method...")
+        return process_excel_document_enhanced(file_path)
+
+def convert_excel_to_pdf(file_path: str, pdf_path: str):
+    """Convert Excel/CSV file to PDF using openpyxl + reportlab"""
+    try:
+        # Create PDF document
+        doc = SimpleDocTemplate(pdf_path, pagesize=A4, topMargin=0.5*inch, bottomMargin=0.5*inch)
+        story = []
+        styles = getSampleStyleSheet()
+        
+        if file_path.endswith('.csv'):
+            # Handle CSV files
+            df = pd.read_csv(file_path)
+            
+            # Add file title
+            title = Paragraph(f"CSV File: {os.path.basename(file_path)}", styles['Heading1'])
+            story.append(title)
+            story.append(Spacer(1, 12))
+            
+            # Add file info
+            info_text = f"Rows: {len(df)}, Columns: {len(df.columns)}"
+            info = Paragraph(info_text, styles['Normal'])
+            story.append(info)
+            story.append(Spacer(1, 12))
+            
+            # Convert DataFrame to table
+            data = [df.columns.tolist()] + df.values.tolist()
+            
+            # Limit rows for PDF (first 50 rows)
+            if len(data) > 51:  # 1 header + 50 data rows
+                data = data[:51]
+                data.append(["...", "...", "...", "...", "..."] * (len(df.columns) // 5 + 1))
+            
+            # Create table
+            table = Table(data)
+            table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTSIZE', (0, 0), (-1, 0), 10),
+                ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+                ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+                ('GRID', (0, 0), (-1, -1), 1, colors.black),
+                ('FONTSIZE', (0, 1), (-1, -1), 8),
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ]))
+            story.append(table)
+            
+        else:
+            # Handle Excel files
+            workbook = load_workbook(file_path, data_only=True)
+            
+            for sheet_idx, sheet_name in enumerate(workbook.sheetnames):
+                if sheet_idx > 0:
+                    story.append(PageBreak())
+                
+                worksheet = workbook[sheet_name]
+                
+                # Add sheet title
+                title = Paragraph(f"Sheet: {sheet_name}", styles['Heading1'])
+                story.append(title)
+                story.append(Spacer(1, 12))
+                
+                # Get data from worksheet
+                data = []
+                max_cols = 0
+                
+                for row in worksheet.iter_rows(values_only=True):
+                    row_data = [str(cell) if cell is not None else "" for cell in row]
+                    data.append(row_data)
+                    max_cols = max(max_cols, len(row_data))
+                
+                # Pad rows to have same number of columns
+                for row in data:
+                    while len(row) < max_cols:
+                        row.append("")
+                
+                # Limit rows for PDF (first 30 rows per sheet)
+                if len(data) > 31:  # 1 header + 30 data rows
+                    data = data[:31]
+                    data.append(["..."] * max_cols)
+                
+                # Create table
+                if data:
+                    table = Table(data)
+                    table.setStyle(TableStyle([
+                        ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+                        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                        ('FONTSIZE', (0, 0), (-1, 0), 10),
+                        ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+                        ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+                        ('GRID', (0, 0), (-1, -1), 1, colors.black),
+                        ('FONTSIZE', (0, 1), (-1, -1), 8),
+                        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                    ]))
+                    story.append(table)
+                    story.append(Spacer(1, 12))
+        
+        # Build PDF
+        doc.build(story)
+        print(f"  Successfully converted Excel/CSV to PDF: {pdf_path}")
+        return True
+        
+    except Exception as e:
+        print(f"  ERROR in Excel to PDF conversion: {str(e)}")
+        raise e
 
 def process_excel_document_enhanced(file_path: str) -> list[str]:
-    """Enhanced Excel/CSV document processing with better formatting"""
+    """Enhanced Excel/CSV document processing with better formatting (fallback)"""
     images = []
     
     if file_path.endswith('.csv'):
@@ -208,18 +342,31 @@ def process_excel_document_fallback(file_path: str) -> list[str]:
     return images
 
 def process_powerpoint_document(file_path: str) -> list[str]:
-    """Convert PowerPoint document to images via enhanced text extraction"""
+    """Convert PowerPoint document to images via PDF conversion using pypandoc"""
     try:
-        # For now, use the enhanced fallback method since pptx2pdf doesn't exist
-        # In the future, we could implement LibreOffice command-line conversion
-        print("  Processing PowerPoint document with enhanced text extraction...")
-        return process_powerpoint_document_enhanced(file_path)
+        # Convert PowerPoint document to PDF first using pypandoc
+        pdf_path = file_path.replace('.pptx', '_converted.pdf').replace('.ppt', '_converted.pdf')
+        print(f"  Converting PowerPoint document to PDF: {file_path} -> {pdf_path}")
+        
+        # Use pypandoc to convert to PDF
+        pypandoc.convert_file(file_path, 'pdf', outputfile=pdf_path)
+        
+        # Process the PDF using the existing PDF processing function
+        print(f"  Processing converted PDF: {pdf_path}")
+        images = process_pdf_document(pdf_path)
+        
+        # Clean up the temporary PDF file
+        if os.path.exists(pdf_path):
+            os.remove(pdf_path)
+            print(f"  Cleaned up temporary PDF: {pdf_path}")
+        
+        return images
         
     except Exception as e:
-        print(f"  ERROR in PowerPoint processing: {str(e)}")
-        # Fallback to the basic method if enhanced method fails
-        print("  Falling back to basic text extraction method...")
-        return process_powerpoint_document_fallback(file_path)
+        print(f"  ERROR in PowerPoint to PDF conversion: {str(e)}")
+        # Fallback to enhanced text extraction if PDF conversion fails
+        print("  Falling back to enhanced text extraction method...")
+        return process_powerpoint_document_enhanced(file_path)
 
 def process_powerpoint_document_enhanced(file_path: str) -> list[str]:
     """Enhanced PowerPoint document processing with better formatting"""
