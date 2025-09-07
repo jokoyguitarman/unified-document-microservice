@@ -8,7 +8,4 @@ pymupdf
 pillow
 python-multipart
 requests
-docx2pdf
-pptx2pdf
-openpyxl
-xlsxwriter 
+docx2pdf 

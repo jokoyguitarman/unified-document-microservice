@@ -19,13 +19,11 @@ import fitz  # PyMuPDF for PDF processing
 
 # PDF conversion libraries
 from docx2pdf import convert as docx_to_pdf
-from pptx2pdf import convert as pptx_to_pdf
 
 # Additional document processing libraries
 import csv
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment
-import xlsxwriter
 
 app = FastAPI()
 
@@ -133,81 +131,54 @@ def process_word_document_fallback(file_path: str) -> list[str]:
     return images
 
 def process_excel_document(file_path: str) -> list[str]:
-    """Convert Excel/CSV document to images via PDF conversion"""
+    """Convert Excel/CSV document to images with enhanced formatting"""
     try:
-        # Convert Excel/CSV to PDF first
-        pdf_path = file_path.replace('.xlsx', '_converted.pdf').replace('.xls', '_converted.pdf').replace('.csv', '_converted.pdf').replace('.ods', '_converted.pdf')
-        print(f"  Converting Excel/CSV document to PDF: {file_path} -> {pdf_path}")
-        
-        # Convert to PDF using pandas and openpyxl
-        convert_excel_to_pdf(file_path, pdf_path)
-        
-        # Process the PDF using the existing PDF processing function
-        print(f"  Processing converted PDF: {pdf_path}")
-        images = process_pdf_document(pdf_path)
-        
-        # Clean up the temporary PDF file
-        if os.path.exists(pdf_path):
-            os.remove(pdf_path)
-            print(f"  Cleaned up temporary PDF: {pdf_path}")
-        
-        return images
+        # Use enhanced text extraction for now
+        print("  Processing Excel/CSV document with enhanced text extraction...")
+        return process_excel_document_enhanced(file_path)
         
     except Exception as e:
-        print(f"  ERROR in Excel/CSV to PDF conversion: {str(e)}")
-        # Fallback to the old method if conversion fails
-        print("  Falling back to text extraction method...")
+        print(f"  ERROR in Excel/CSV processing: {str(e)}")
+        # Fallback to the basic method if enhanced method fails
+        print("  Falling back to basic text extraction method...")
         return process_excel_document_fallback(file_path)
 
-def convert_excel_to_pdf(file_path: str, pdf_path: str):
-    """Convert Excel/CSV file to PDF"""
+def process_excel_document_enhanced(file_path: str) -> list[str]:
+    """Enhanced Excel/CSV document processing with better formatting"""
+    images = []
+    
     if file_path.endswith('.csv'):
-        # Handle CSV files
+        # Handle CSV files with better formatting
         df = pd.read_csv(file_path)
-        # Create a new Excel file from CSV
-        excel_path = file_path.replace('.csv', '_temp.xlsx')
-        df.to_excel(excel_path, index=False, engine='openpyxl')
-        file_path = excel_path
-    
-    # Read Excel file
-    excel_file = pd.ExcelFile(file_path)
-    
-    # Create a new workbook for PDF conversion
-    wb = Workbook()
-    wb.remove(wb.active)  # Remove default sheet
-    
-    for sheet_name in excel_file.sheet_names:
-        df = pd.read_excel(file_path, sheet_name=sheet_name)
+        text_content = f"CSV File: {os.path.basename(file_path)}\n"
+        text_content += "=" * 60 + "\n\n"
+        text_content += f"Rows: {len(df)}, Columns: {len(df.columns)}\n\n"
+        text_content += "Column Headers:\n"
+        text_content += "- " + "\n- ".join(df.columns.tolist()) + "\n\n"
+        text_content += "Data Preview:\n"
+        text_content += df.head(20).to_string(index=False, max_cols=10)
         
-        # Create new worksheet
-        ws = wb.create_sheet(title=sheet_name)
+        image = create_text_image(text_content, 1, "CSV File")
+        images.append(image)
+    else:
+        # Handle Excel files with better formatting
+        excel_file = pd.ExcelFile(file_path)
         
-        # Add data to worksheet
-        for r_idx, row in enumerate(df.itertuples(index=False), 1):
-            for c_idx, value in enumerate(row, 1):
-                ws.cell(row=r_idx, column=c_idx, value=value)
-        
-        # Style the worksheet
-        for column in ws.columns:
-            max_length = 0
-            column_letter = column[0].column_letter
-            for cell in column:
-                try:
-                    if len(str(cell.value)) > max_length:
-                        max_length = len(str(cell.value))
-                except:
-                    pass
-            adjusted_width = min(max_length + 2, 50)
-            ws.column_dimensions[column_letter].width = adjusted_width
+        for sheet_idx, sheet_name in enumerate(excel_file.sheet_names):
+            df = pd.read_excel(file_path, sheet_name=sheet_name)
+            
+            text_content = f"Excel Sheet: {sheet_name}\n"
+            text_content += "=" * 60 + "\n\n"
+            text_content += f"Rows: {len(df)}, Columns: {len(df.columns)}\n\n"
+            text_content += "Column Headers:\n"
+            text_content += "- " + "\n- ".join(df.columns.tolist()) + "\n\n"
+            text_content += "Data Preview:\n"
+            text_content += df.head(15).to_string(index=False, max_cols=8)
+            
+            image = create_text_image(text_content, sheet_idx + 1, f"Excel - {sheet_name}")
+            images.append(image)
     
-    # Save as Excel first
-    excel_temp_path = file_path.replace('.xlsx', '_temp.xlsx').replace('.xls', '_temp.xlsx')
-    wb.save(excel_temp_path)
-    
-    # Convert Excel to PDF using openpyxl (this is a simplified approach)
-    # In a real implementation, you might want to use a library like xlsxwriter with PDF export
-    # For now, we'll use the text-based approach as fallback
-    raise Exception("Excel to PDF conversion not fully implemented, using fallback")
+    return images
 
 def process_excel_document_fallback(file_path: str) -> list[str]:
     """Fallback method for Excel/CSV document processing (old approach)"""
@@ -237,31 +208,40 @@ def process_excel_document_fallback(file_path: str) -> list[str]:
     return images
 
 def process_powerpoint_document(file_path: str) -> list[str]:
-    """Convert PowerPoint document to images via PDF conversion"""
+    """Convert PowerPoint document to images via enhanced text extraction"""
     try:
-        # Convert PowerPoint document to PDF first
-        pdf_path = file_path.replace('.pptx', '_converted.pdf').replace('.ppt', '_converted.pdf')
-        print(f"  Converting PowerPoint document to PDF: {file_path} -> {pdf_path}")
-        
-        # Use pptx2pdf to convert to PDF
-        pptx_to_pdf(file_path, pdf_path)
-        
-        # Process the PDF using the existing PDF processing function
-        print(f"  Processing converted PDF: {pdf_path}")
-        images = process_pdf_document(pdf_path)
-        
-        # Clean up the temporary PDF file
-        if os.path.exists(pdf_path):
-            os.remove(pdf_path)
-            print(f"  Cleaned up temporary PDF: {pdf_path}")
-        
-        return images
+        # For now, use the enhanced fallback method since pptx2pdf doesn't exist
+        # In the future, we could implement LibreOffice command-line conversion
+        print("  Processing PowerPoint document with enhanced text extraction...")
+        return process_powerpoint_document_enhanced(file_path)
         
     except Exception as e:
-        print(f"  ERROR in PowerPoint to PDF conversion: {str(e)}")
-        # Fallback to the old method if conversion fails
-        print("  Falling back to text extraction method...")
+        print(f"  ERROR in PowerPoint processing: {str(e)}")
+        # Fallback to the basic method if enhanced method fails
+        print("  Falling back to basic text extraction method...")
         return process_powerpoint_document_fallback(file_path)
+
+def process_powerpoint_document_enhanced(file_path: str) -> list[str]:
+    """Enhanced PowerPoint document processing with better formatting"""
+    prs = Presentation(file_path)
+    images = []
+    
+    for i, slide in enumerate(prs.slides):
+        # Extract text from shapes with better formatting
+        text_content = f"Slide {i + 1}\n"
+        text_content += "=" * 50 + "\n\n"
+        
+        for shape in slide.shapes:
+            if hasattr(shape, "text") and shape.text.strip():
+                # Add shape type context
+                shape_type = str(shape.shape_type).split('.')[-1] if hasattr(shape, 'shape_type') else "Text"
+                text_content += f"[{shape_type}]: {shape.text.strip()}\n\n"
+        
+        if text_content.strip():
+            image = create_text_image(text_content, i + 1, "PowerPoint")
+            images.append(image)
+    
+    return images
 
 def process_powerpoint_document_fallback(file_path: str) -> list[str]:
     """Fallback method for PowerPoint document processing (old approach)"""
